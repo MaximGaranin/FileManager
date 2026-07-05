@@ -85,11 +85,56 @@
 
 ## Зависимости
 
-- `ncursesw`
-- `libtsm`
-- `pthread`
-- `util` (для `forkpty`)
-- `nvim` (опционально, для открытия файлов из превью и терминала)
+Для сборки нужны заголовки и библиотеки `ncursesw`, `libtsm`, `pthread`
+и `libutil` (для `forkpty`). `pthread` и `libutil` входят в состав
+`glibc`/`build-essential` и отдельно устанавливать их не нужно.
+
+### Debian / Ubuntu
+
+```bash
+sudo apt install build-essential libncursesw5-dev libtsm-dev
+```
+
+### Fedora / RHEL / CentOS
+
+```bash
+sudo dnf install gcc ncurses-devel
+```
+
+Готового пакета `libtsm-devel` в стандартных репозиториях обычно нет —
+собери `libtsm` из исходников (см. ниже).
+
+### Arch Linux / Manjaro
+
+```bash
+sudo pacman -S base-devel ncurses libtsm
+```
+
+### Сборка libtsm из исходников (если нет готового пакета)
+
+```bash
+git clone https://github.com/Aracthor/libtsm.git
+cd libtsm
+meson setup build
+ninja -C build
+sudo ninja -C build install
+sudo ldconfig
+```
+
+### Проверка перед компиляцией
+
+```bash
+pkg-config --cflags --libs libtsm
+pkg-config --cflags --libs ncursesw
+```
+
+Если `pkg-config` не находит `ncursesw`, убедись, что установлен именно
+wide-character дев-пакет (на Debian — `libncursesw5-dev`, отдельно от
+обычного `libncurses-dev`), иначе не будет поддержки UTF-8.
+
+### Опционально
+
+- `nvim` — для открытия файлов из превью и встроенного терминала.
 
 ## Сборка
 
@@ -101,8 +146,11 @@ gcc -Wall -O2 fm.c -o fm \
   -Wl,-rpath,/usr/local/lib64
 ```
 
-Если `libtsm` установлена в стандартный системный путь, флаги `-I` и
-`-L` можно убрать:
+Флаги `-I/usr/local/include`, `-L/usr/local/lib64` и
+`-Wl,-rpath,/usr/local/lib64` нужны только если `libtsm` установлена
+вручную из исходников в `/usr/local`. Если `libtsm` установлена через
+системный пакетный менеджер (Arch, либо собранная в стандартный путь),
+эти флаги можно убрать:
 
 ```bash
 gcc -Wall -O2 fm.c -o fm -ltsm -lncursesw -lpthread -lutil
