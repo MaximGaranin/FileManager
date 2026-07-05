@@ -52,6 +52,7 @@ typedef struct {
 
 static int focus = 0;
 
+/* ─── процессы ───────────────────────────────────────────── */
 static int proc_mode = 0;
 static int proc_scroll = 0;
 static int proc_cursor = 0;
@@ -68,11 +69,14 @@ static void sigusr1_handler(int sig) {
   nvim_signal = 1;
 }
 
-static volatile int resize_pending = 0;
+static char g_home[4096];
 
-static void sigwinch_handler(int sig) {
-  (void)sig;
-  resize_pending = 1;
+static void fatal_cleanup_handler(int sig) {
+  char wpath[4096];
+  snprintf(wpath, sizeof(wpath), "%s/bin/nvim", g_home);
+  remove(wpath);
+  signal(sig, SIG_DFL);
+  raise(sig);
 }
 
 /* ─── PTY / TSM ──────────────────────────────────────────── */
@@ -353,7 +357,7 @@ static int load_dir(const char *path, Entry *entries, int max) {
   return count;
 }
 
-/* ─── процессы (/proc) ──────────────────────────────────── */
+/* ─── процессы ───────────────────────────────────────────── */
 
 static unsigned long long read_starttime(pid_t pid) {
   char path[64];
@@ -477,7 +481,8 @@ static void render_process_window(WINDOW *win) {
   werase(win);
   box(win, 0, 0);
   mvwprintw(win, 0, 2, " processes (newest first) ");
-  mvwprintw(win, 0, w - 24, " P:back  j/k:move ");
+  if (w > 24)
+    mvwprintw(win, 0, w - 24, " P:back  j/k:move ");
   int visible = h - 2;
   for (int i = 0; i < visible; i++) {
     int idx = proc_scroll + i;
@@ -503,6 +508,7 @@ static void render_process_window(WINDOW *win) {
     if ((int)strlen(cmd) > w - col - 1 && w - col - 1 > 0)
       cmd[w - col - 1] = '\0';
     mvwprintw(win, i + 1, col, "%s", cmd);
+
     if (idx == proc_cursor)
       wattroff(win, A_REVERSE);
   }
@@ -951,50 +957,6 @@ static void render_status(WINDOW *win, Tab *t, int searching,
   wrefresh(win);
 }
 
-static void relayout(WINDOW **tabbar, WINDOW **panel, WINDOW **prev_w,
-                     WINDOW *term_win_ptr, WINDOW **status, WINDOW **proc_win,
-                     int *rows, int *cols) {
-  endwin();
-  refresh();
-  clear();
-  getmaxyx(stdscr, *rows, *cols);
-
-  int half = *cols / 2;
-  int content = *rows - 2;
-  int panel_h = content / 2;
-  int term_h = content - panel_h;
-
-  wresize(*tabbar, 1, *cols);
-  mvwin(*tabbar, 0, 0);
-
-  wresize(*panel, panel_h, half);
-  mvwin(*panel, 1, 0);
-
-  wresize(*prev_w, content, *cols - half);
-  mvwin(*prev_w, 1, half);
-
-  wresize(term_win_ptr, term_h, half);
-  mvwin(term_win_ptr, 1 + panel_h, 0);
-
-  wresize(*status, 1, *cols);
-  mvwin(*status, *rows - 1, 0);
-
-  if (*proc_win) {
-    wresize(*proc_win, *rows - 2, *cols);
-    mvwin(*proc_win, 1, 0);
-  }
-
-  pty_resize(term_h - 2, half - 2);
-
-  touchwin(*tabbar);
-  touchwin(*panel);
-  touchwin(*prev_w);
-  touchwin(term_win_ptr);
-  touchwin(*status);
-  if (*proc_win)
-    touchwin(*proc_win);
-}
-
 /* ─── main ───────────────────────────────────────────────── */
 
 int main(void) {
@@ -1006,8 +968,14 @@ int main(void) {
 
   pid_t fm_pid = getpid();
 
+  strncpy(g_home, home, sizeof(g_home));
+  g_home[sizeof(g_home) - 1] = '\0';
+  signal(SIGSEGV, fatal_cleanup_handler);
+  signal(SIGABRT, fatal_cleanup_handler);
+  signal(SIGTERM, fatal_cleanup_handler);
+  signal(SIGHUP, fatal_cleanup_handler);
+
   signal(SIGUSR1, sigusr1_handler);
-  signal(SIGWINCH, sigwinch_handler);
 
   install_nvim_wrapper(home, fm_pid);
 
@@ -1054,9 +1022,8 @@ int main(void) {
       render_process_window(proc_win);                                         \
       werase(status);                                                          \
       wattron(status, A_REVERSE);                                              \
-      mvwprintw(                                                               \
-          status, 0, 0,                                                        \
-          " processes: j/k move  Enter kill -9  s signal  P back  q quit ");   \
+      mvwprintw(status, 0, 0,                                                  \
+                " processes: j/k move  PgUp/PgDn  P back  q quit ");           \
       wattroff(status, A_REVERSE);                                             \
       wrefresh(status);                                                        \
     } else {                                                                   \
@@ -1096,15 +1063,7 @@ int main(void) {
       continue;
     }
 
-    if (resize_pending) {
-      resize_pending = 0;
-      relayout(&tabbar, &panel, &prev_w, term_win, &status, &proc_win, &rows,
-               &cols);
-      REDRAW();
-      continue;
-    }
-
-    if (pty_dirty)
+    if (pty_dirty && !proc_mode)
       term_draw();
 
     WINDOW *active_win = proc_mode      ? proc_win
@@ -1172,6 +1131,15 @@ int main(void) {
           proc_cursor--;
         if (proc_cursor < proc_scroll)
           proc_scroll--;
+        if (proc_scroll < 0)
+          proc_scroll = 0;
+      } else if (ch == KEY_NPAGE) {
+        proc_cursor += visible;
+        if (proc_cursor >= proc_count)
+          proc_cursor = proc_count - 1;
+        proc_scroll += visible;
+        if (proc_scroll > proc_count - visible)
+          proc_scroll = proc_count - visible;
         if (proc_scroll < 0)
           proc_scroll = 0;
       } else if (ch == KEY_PPAGE) {
